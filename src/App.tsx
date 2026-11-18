@@ -214,6 +214,7 @@ export default function App() {
 
   // Real-time mixing fader and interactive states
   const [autoMixEnabled, setAutoMixEnabled] = useState<boolean>(true);
+  const [copiedMixed, setCopiedMixed] = useState<boolean>(false);
   const [isAssistantOpen, setIsAssistantOpen] = useState<boolean>(false);
   const [assistantInput, setAssistantInput] = useState<string>("");
   const [assistantMessages, setAssistantMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([
@@ -597,12 +598,33 @@ export default function App() {
     setMixerScript(mixerScript === "romanized" ? "native" : "romanized");
   };
 
-  // Load Corpus from LocalStorage on mount
+  // Load Corpus from LocalStorage on mount (and sync updated built-in samples)
   useEffect(() => {
     const saved = localStorage.getItem("linguolens_corpus_v1");
     if (saved) {
       try {
-        setCorpus(JSON.parse(saved));
+        const parsed: CorpusItem[] = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          const updatedSample2 = initialCorpus.find(c => c.id === "sample-2");
+          let migrated = false;
+          const synced = parsed.map(item => {
+            if (
+              item.id === "sample-2" &&
+              updatedSample2 &&
+              item.text.includes("Hey, ajke class-ta")
+            ) {
+              migrated = true;
+              return updatedSample2;
+            }
+            return item;
+          });
+          setCorpus(synced);
+          if (migrated) {
+            localStorage.setItem("linguolens_corpus_v1", JSON.stringify(synced));
+          }
+        } else {
+          setCorpus(initialCorpus);
+        }
       } catch (e) {
         setCorpus(initialCorpus);
       }
@@ -959,15 +981,21 @@ export default function App() {
 
   const filteredTokens = getFilteredTokens();
 
-  // Generate Report HTML window print
-  const printReport = () => {
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) return;
+  // Escape HTML entities for safe print report generation
+  const escapeHtml = (str: string) =>
+    str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
 
+  // Generate Report HTML via hidden iframe print (iframe-safe, avoids window.open)
+  const printReport = () => {
     const reportHtml = `
       <html>
         <head>
-          <title>${reportTitle}</title>
+          <title>${escapeHtml(reportTitle)}</title>
           <style>
             body { font-family: 'Georgia', serif; padding: 40px; color: #1e293b; line-height: 1.6; max-width: 800px; margin: 0 auto; }
             h1 { font-family: 'Helvetica', sans-serif; font-size: 28px; font-weight: bold; margin-bottom: 5px; color: #0f172a; }
@@ -986,18 +1014,18 @@ export default function App() {
           </style>
         </head>
         <body>
-          <h1>${reportTitle}</h1>
+          <h1>${escapeHtml(reportTitle)}</h1>
           <div class="meta">
-            <div><strong>Lead Investigator:</strong> ${leadResearcher}</div>
-            <div class="affiliation"><strong>Institution:</strong> ${affiliation}</div>
+            <div><strong>Lead Investigator:</strong> ${escapeHtml(leadResearcher)}</div>
+            <div class="affiliation"><strong>Institution:</strong> ${escapeHtml(affiliation)}</div>
             <div><strong>Date Generated:</strong> ${new Date().toLocaleDateString()}</div>
           </div>
           
           <h2>I. Abstract Overview</h2>
-          <div class="abstract">${currentAnalysis?.summary || "No active abstract generated."}</div>
+          <div class="abstract">${escapeHtml(currentAnalysis?.summary || "No active abstract generated.")}</div>
           
           <h2>II. Computational Methodology</h2>
-          <p>${reportIntro}</p>
+          <p>${escapeHtml(reportIntro)}</p>
           <p>Text samples were segmented dynamically into word units (tokenization). Each token was queried against specialized lexical matrices to tag its source syntax and morphological base, calculating the mathematical Code-Mixing Index (CMI) defined as the proportion of code-switching transitions relative to sentence units.</p>
 
           <h2>III. Empirical Statistical Corpus Metrics</h2>
@@ -1030,9 +1058,9 @@ export default function App() {
             <tbody>
               ${(currentAnalysis?.borrowedVocabulary || []).map(b => `
                 <tr>
-                  <td><strong>${b.word}</strong></td>
-                  <td>${b.sourceLanguage}</td>
-                  <td>${b.targetSyntax}</td>
+                  <td><strong>${escapeHtml(b.word)}</strong></td>
+                  <td>${escapeHtml(b.sourceLanguage)}</td>
+                  <td>${escapeHtml(b.targetSyntax)}</td>
                   <td>${b.frequency} instances</td>
                 </tr>
               `).join("")}
@@ -1045,18 +1073,38 @@ export default function App() {
           <div class="footer">
             Generated automatically via LinguoLens: Bangla-English Code-Mixing Research Platform
           </div>
-          <script>window.print();</script>
         </body>
       </html>
     `;
 
-    printWindow.document.open();
-    printWindow.document.write(reportHtml);
-    printWindow.document.close();
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(reportHtml);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          if (iframe.parentNode) {
+            document.body.removeChild(iframe);
+          }
+        }, 1000);
+      }, 250);
+    }
   };
 
   return (
-    <div id="linguolens-workspace" className={`flex h-screen antialiased overflow-hidden transition-all duration-300 ${d.wrapper}`}>
+    <div id="linguolens-workspace" className={`flex h-screen antialiased overflow-hidden transition-all duration-300 ${theme === "midnight" ? "dark" : ""} ${d.wrapper}`}>
       
       {/* SIDEBAR STATION */}
       <aside className={`w-64 flex flex-col border-r select-none shrink-0 z-10 transition-all duration-300 ${d.sidebar}`}>
@@ -1330,12 +1378,15 @@ export default function App() {
                                 <div className="flex justify-end space-x-2 mt-3 pt-2 border-t border-slate-100 dark:border-slate-800/40">
                                   <button
                                     onClick={() => {
-                                      navigator.clipboard.writeText(realtimeMixedText);
+                                      navigator.clipboard?.writeText(realtimeMixedText).then(() => {
+                                        setCopiedMixed(true);
+                                        setTimeout(() => setCopiedMixed(false), 1500);
+                                      }).catch(() => {});
                                     }}
-                                    className="px-2 py-1 bg-white dark:bg-slate-800 hover:bg-slate-100 border border-slate-200 dark:border-slate-700 text-[10px] text-slate-600 dark:text-slate-300 font-bold rounded-md flex items-center space-x-1 shadow-xs cursor-pointer"
+                                    className="px-2 py-1 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-[10px] text-slate-600 dark:text-slate-300 font-bold rounded-md flex items-center space-x-1 shadow-xs cursor-pointer"
                                   >
-                                    <Copy size={11} />
-                                    <span>Copy</span>
+                                    {copiedMixed ? <Check size={11} className="text-emerald-500" /> : <Copy size={11} />}
+                                    <span>{copiedMixed ? "Copied" : "Copy"}</span>
                                   </button>
                                   <button
                                     onClick={() => setInputText(realtimeMixedText)}
@@ -1429,7 +1480,7 @@ export default function App() {
                               max="90"
                               value={mixerCmi}
                               onChange={(e) => setMixerCmi(Number(e.target.value))}
-                              style={{ WebkitAppearance: 'slider-vertical', writingMode: 'bt-lr' } as any}
+                              style={{ writingMode: 'vertical-lr', direction: 'rtl', WebkitAppearance: 'slider-vertical' } as any}
                               className="h-full w-1 cursor-pointer accent-emerald-400"
                             />
                           </div>
@@ -1451,7 +1502,7 @@ export default function App() {
                               max="100"
                               value={mixerBalance}
                               onChange={(e) => setMixerBalance(Number(e.target.value))}
-                              style={{ WebkitAppearance: 'slider-vertical', writingMode: 'bt-lr' } as any}
+                              style={{ writingMode: 'vertical-lr', direction: 'rtl', WebkitAppearance: 'slider-vertical' } as any}
                               className="h-full w-1 cursor-pointer accent-sky-400"
                             />
                           </div>
@@ -1473,7 +1524,7 @@ export default function App() {
                               max="90"
                               value={mixerNoise}
                               onChange={(e) => setMixerNoise(Number(e.target.value))}
-                              style={{ WebkitAppearance: 'slider-vertical', writingMode: 'bt-lr' } as any}
+                              style={{ writingMode: 'vertical-lr', direction: 'rtl', WebkitAppearance: 'slider-vertical' } as any}
                               className="h-full w-1 cursor-pointer accent-amber-400"
                             />
                           </div>
@@ -1644,17 +1695,17 @@ export default function App() {
 
                   {/* Loading Progress Segment */}
                   {isAnalyzing && (
-                    <div className="border border-[#e2e8f0] bg-slate-50 rounded-xl p-4 space-y-2 animate-pulse">
-                      <div className="flex justify-between text-xs font-semibold text-slate-600">
+                    <div className="border border-[#e2e8f0] dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 rounded-xl p-4 space-y-2 animate-pulse">
+                      <div className="flex justify-between text-xs font-semibold text-slate-600 dark:text-slate-300">
                         <span className="flex items-center space-x-2">
-                          <span className="w-2 h-2 bg-[#1d4ed8] rounded-full animate-ping"></span>
+                          <span className="w-2 h-2 bg-[#1d4ed8] dark:bg-emerald-400 rounded-full animate-ping"></span>
                           <span>{progressMessage}</span>
                         </span>
                         <span className="font-mono">{analysisProgress}%</span>
                       </div>
-                      <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                      <div className="w-full bg-slate-200 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
                         <div 
-                          className="bg-[#1d4ed8] h-full transition-all duration-300 rounded-full" 
+                          className="bg-[#1d4ed8] dark:bg-emerald-500 h-full transition-all duration-300 rounded-full" 
                           style={{ width: `${analysisProgress}%` }}
                         />
                       </div>
@@ -1663,13 +1714,13 @@ export default function App() {
 
                   {/* Analysis Error State Box */}
                   {analysisError && (
-                    <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-start space-x-3 text-rose-800 text-xs">
+                    <div className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-xl p-4 flex items-start space-x-3 text-rose-800 dark:text-rose-200 text-xs">
                       <AlertCircle size={16} className="text-rose-500 shrink-0 mt-0.5" />
                       <div className="space-y-1">
                         <p className="font-semibold">Analysis Failed</p>
-                        <p className="text-rose-600 leading-relaxed">{analysisError}</p>
-                        <p className="text-[10px] text-slate-500 mt-2">
-                          💡 Ensure your server is active and the <strong className="font-bold">GEMINI_API_KEY</strong> is set in the secrets menu.
+                        <p className="text-rose-600 dark:text-rose-300 leading-relaxed">{analysisError}</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-2">
+                          Ensure your server is active and the <strong className="font-bold">GEMINI_API_KEY</strong> is set in the secrets menu.
                         </p>
                       </div>
                     </div>
@@ -1677,14 +1728,14 @@ export default function App() {
                 </div>
 
                 {/* Annotation & Saving Workspace */}
-                <div className={`rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-4 transition-all duration-300 ${d.card}`}>
+                <div className={`rounded-2xl p-6 shadow-sm flex flex-col justify-between space-y-4 border transition-all duration-300 ${d.card}`}>
                   <div className="space-y-3">
                     <h3 className={`text-xs font-bold uppercase tracking-wider ${d.cardTitle}`}>Corpus Cataloging</h3>
                     <p className="text-xs text-slate-400">Attach metadata and save this sample directly into the Local Corpus Database.</p>
                     
                     <div className="space-y-3 pt-2">
                       <div>
-                        <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Dataset Tags</label>
+                        <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Dataset Tags</label>
                         <input 
                           type="text" 
                           placeholder="e.g., WhatsApp chat, transliterated"
@@ -1695,7 +1746,7 @@ export default function App() {
                       </div>
 
                       <div>
-                        <label className="block text-[11px] font-semibold text-slate-500 uppercase mb-1">Researcher Notes</label>
+                        <label className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Researcher Notes</label>
                         <textarea 
                           placeholder="Identify specific features like insertional grammar, matrices, code borrowing indexes..."
                           value={customNotes}
@@ -1706,7 +1757,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+                  <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
                     {isSavedInSession ? (
                       <span className="bg-emerald-50 text-emerald-700 text-xs font-semibold px-4 py-2.5 rounded-xl border border-emerald-200 flex items-center space-x-1.5 w-full justify-center">
                         <Check size={14} />
@@ -1935,39 +1986,39 @@ export default function App() {
                             </div>
 
                             {/* Legend Panel & Numeric Details */}
-                            <div className="space-y-3 text-xs text-slate-600">
-                              <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                            <div className="space-y-3 text-xs text-slate-600 dark:text-slate-300">
+                              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-1.5">
                                 <span className="flex items-center space-x-2">
                                   <span className="w-2.5 h-2.5 bg-emerald-500 rounded-full" />
                                   <strong>Bangla Vocabulary:</strong>
                                 </span>
-                                <span className="font-mono font-bold text-slate-800">{currentAnalysis.languageStats.banglaWordCount} words</span>
+                                <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{currentAnalysis.languageStats.banglaWordCount} words</span>
                               </div>
-                              <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-1.5">
                                 <span className="flex items-center space-x-2">
                                   <span className="w-2.5 h-2.5 bg-blue-500 rounded-full" />
                                   <strong>English Vocabulary:</strong>
                                 </span>
-                                <span className="font-mono font-bold text-slate-800">{currentAnalysis.languageStats.englishWordCount} words</span>
+                                <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{currentAnalysis.languageStats.englishWordCount} words</span>
                               </div>
-                              <div className="flex justify-between items-center border-b border-slate-100 pb-1.5">
+                              <div className="flex justify-between items-center border-b border-slate-100 dark:border-slate-800 pb-1.5">
                                 <span className="flex items-center space-x-2">
                                   <span className="w-2.5 h-2.5 bg-violet-500 rounded-full" />
                                   <strong>Mixed Morphology:</strong>
                                 </span>
-                                <span className="font-mono font-bold text-slate-800">{currentAnalysis.languageStats.mixedWordCount} words</span>
+                                <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{currentAnalysis.languageStats.mixedWordCount} words</span>
                               </div>
                               <div className="flex justify-between items-center pb-1.5">
                                 <span className="flex items-center space-x-2">
                                   <span className="w-2.5 h-2.5 bg-slate-400 rounded-full" />
                                   <strong>Punctuation & Symbols:</strong>
                                 </span>
-                                <span className="font-mono font-bold text-slate-800">{currentAnalysis.languageStats.punctuationCount} units</span>
+                                <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{currentAnalysis.languageStats.punctuationCount} units</span>
                               </div>
                               
                               <div className="pt-2 flex justify-between items-center text-slate-400 text-[10px]">
                                 <span>Dominant Matrix:</span>
-                                <span className="bg-slate-100 text-slate-700 font-bold px-2 py-0.5 rounded-full font-mono uppercase">{currentAnalysis.languageStats.dominantLanguage}</span>
+                                <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold px-2 py-0.5 rounded-full font-mono uppercase">{currentAnalysis.languageStats.dominantLanguage}</span>
                               </div>
                             </div>
                           </div>
@@ -1998,22 +2049,22 @@ export default function App() {
                         </div>
 
                         {/* Top Parts of Speech chart list */}
-                        <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm">
-                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-4">POS Tag Frequency</h4>
+                        <div className={`rounded-2xl border p-6 shadow-sm transition-all duration-300 ${d.card}`}>
+                          <h4 className={`text-xs font-bold uppercase tracking-wider mb-4 ${d.cardTitle}`}>POS Tag Frequency</h4>
                           
                           <div className="space-y-3">
                             {currentAnalysisPosFreq.slice(0, 5).map((pos, idx) => (
                               <div key={idx} className="space-y-1">
                                 <div className="flex justify-between text-xs">
-                                  <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded-md font-semibold text-slate-700">
+                                  <span className="font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-md font-semibold text-slate-700 dark:text-slate-200">
                                     {pos.pos}
                                   </span>
                                   <span className="text-slate-400">{pos.count} occurrences</span>
                                 </div>
-                                <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
+                                <div className="w-full bg-slate-100 dark:bg-slate-800 h-1 rounded-full overflow-hidden">
                                   <div 
-                                    className="bg-slate-800 h-full rounded-full" 
-                                    style={{ width: `${(pos.count / currentAnalysis.tokens.length) * 100}%` }}
+                                    className="bg-slate-800 dark:bg-emerald-500 h-full rounded-full" 
+                                    style={{ width: `${(pos.count / (currentAnalysis.tokens.length || 1)) * 100}%` }}
                                   />
                                 </div>
                               </div>
@@ -2034,9 +2085,9 @@ export default function App() {
                     <div className="space-y-6">
                       
                       {/* Filter Bar & Controls */}
-                      <div className="bg-white rounded-2xl border border-[#e2e8f0] p-4 shadow-sm flex flex-wrap gap-2 items-center justify-between">
+                      <div className={`rounded-2xl border p-4 shadow-sm flex flex-wrap gap-2 items-center justify-between transition-all duration-300 ${d.card}`}>
                         <div className="flex items-center space-x-2">
-                          <span className="text-xs font-bold text-slate-500 uppercase flex items-center space-x-1">
+                          <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase flex items-center space-x-1">
                             <Filter size={13} />
                             <span>Token Filter:</span>
                           </span>
@@ -2045,10 +2096,10 @@ export default function App() {
                             <button
                               key={f}
                               onClick={() => setTokenFilter(f)}
-                              className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition ${
+                              className={`text-xs px-3 py-1.5 rounded-lg font-semibold border transition cursor-pointer ${
                                 tokenFilter === f 
-                                  ? "bg-slate-900 text-white border-slate-950" 
-                                  : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                  ? "bg-slate-900 dark:bg-emerald-500 text-white dark:text-black border-slate-950 dark:border-emerald-400" 
+                                  : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                               }`}
                             >
                               {f === "Mixed" ? "Mixed (Hybrid)" : f}
@@ -2065,11 +2116,11 @@ export default function App() {
                       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
                         
                         {/* Token list table (2 cols wide) */}
-                        <div className="xl:col-span-2 bg-white rounded-2xl border border-[#e2e8f0] shadow-sm overflow-hidden">
+                        <div className={`xl:col-span-2 rounded-2xl border shadow-sm overflow-hidden transition-all duration-300 ${d.card}`}>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse">
                               <thead>
-                                <tr className="bg-[#f8fafc] border-b border-[#e2e8f0] text-xs font-bold text-slate-500 uppercase">
+                                <tr className="bg-[#f8fafc] dark:bg-slate-900/70 border-b border-[#e2e8f0] dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
                                   <th className="p-4 w-12 font-mono">Index</th>
                                   <th className="p-4">Word / Token</th>
                                   <th className="p-4">Language Class</th>
@@ -2078,39 +2129,39 @@ export default function App() {
                                   <th className="p-4">Linguistic Gloss</th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-100 text-sm">
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
                                 {filteredTokens.map((t, idx) => (
                                   <tr 
                                     key={idx} 
                                     onMouseEnter={() => setHoveredToken(t)}
-                                    className="hover:bg-[#f1f5f9]/50 transition duration-150 cursor-pointer"
+                                    className="hover:bg-[#f1f5f9]/50 dark:hover:bg-slate-800/40 transition duration-150 cursor-pointer"
                                   >
                                     <td className="p-4 font-mono text-xs text-slate-400">{idx + 1}</td>
-                                    <td className="p-4 font-semibold text-slate-800">
+                                    <td className="p-4 font-semibold text-slate-800 dark:text-slate-100">
                                       {t.text}
                                     </td>
                                     <td className="p-4">
                                       <span className={`text-[11px] font-bold px-2 py-1 rounded-md ${
                                         t.language === "Bangla" 
-                                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100" 
+                                          ? d.badgeBangla 
                                           : t.language === "English" 
-                                            ? "bg-blue-50 text-blue-700 border border-blue-100" 
+                                            ? d.badgeEnglish 
                                             : t.language === "Mixed" 
-                                              ? "bg-violet-50 text-violet-700 border border-violet-100" 
-                                              : "bg-slate-50 text-slate-500 border border-slate-100"
+                                              ? d.badgeMixed 
+                                              : d.badgeOther
                                       }`}>
                                         {t.language}
                                       </span>
                                     </td>
                                     <td className="p-4">
-                                      <span className="font-mono text-xs font-bold bg-slate-100 px-1.5 py-0.5 rounded-sm text-slate-600">
+                                      <span className="font-mono text-xs font-bold bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-sm text-slate-600 dark:text-slate-300">
                                         {t.posTag}
                                       </span>
                                     </td>
-                                    <td className="p-4 font-mono text-xs text-slate-500">
+                                    <td className="p-4 font-mono text-xs text-slate-500 dark:text-slate-400">
                                       {t.morphology?.root || "-"}
                                     </td>
-                                    <td className="p-4 text-xs text-slate-500 italic truncate max-w-[120px]">
+                                    <td className="p-4 text-xs text-slate-500 dark:text-slate-400 italic truncate max-w-[120px]">
                                       {t.englishGloss}
                                     </td>
                                   </tr>
@@ -2128,56 +2179,56 @@ export default function App() {
                         </div>
 
                         {/* Hovered Token Metadata Panel (1 col wide) */}
-                        <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm space-y-4 sticky top-6">
-                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
-                            <Info size={14} className="text-[#1d4ed8]" />
+                        <div className={`rounded-2xl border p-6 shadow-sm space-y-4 sticky top-6 transition-all duration-300 ${d.card}`}>
+                          <h4 className={`text-xs font-bold uppercase tracking-wider flex items-center space-x-1.5 ${d.cardTitle}`}>
+                            <Info size={14} className={d.primaryText} />
                             <span>Morphosyntactic Annotator</span>
                           </h4>
                           
                           {hoveredToken ? (
                             <div className="space-y-4">
-                              <div className="border-b border-slate-100 pb-3">
-                                <span className="text-2xl font-extrabold text-slate-800 font-mono tracking-tight">{hoveredToken.text}</span>
+                              <div className="border-b border-slate-100 dark:border-slate-800 pb-3">
+                                <span className="text-2xl font-extrabold text-slate-800 dark:text-slate-100 font-mono tracking-tight">{hoveredToken.text}</span>
                                 <div className="mt-1 flex items-center space-x-2">
                                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                                     hoveredToken.language === "Bangla" 
-                                      ? "bg-emerald-100 text-emerald-800" 
+                                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300" 
                                       : hoveredToken.language === "English" 
-                                        ? "bg-blue-100 text-blue-800" 
-                                        : "bg-violet-100 text-violet-800"
+                                        ? "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300" 
+                                        : "bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-300"
                                   }`}>
                                     {hoveredToken.language}
                                   </span>
                                   {hoveredToken.morphology?.isBorrowed && (
-                                    <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Loaned</span>
+                                    <span className="bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase">Loaned</span>
                                   )}
                                 </div>
                               </div>
 
                               <div className="space-y-2.5 text-xs">
-                                <div className="flex justify-between pb-1 border-b border-slate-50">
+                                <div className="flex justify-between pb-1 border-b border-slate-50 dark:border-slate-800">
                                   <span className="text-slate-400 font-medium">Transliterated Frame:</span>
-                                  <span className="font-semibold text-slate-800 font-mono">{hoveredToken.transliterated || hoveredToken.text}</span>
+                                  <span className="font-semibold text-slate-800 dark:text-slate-100 font-mono">{hoveredToken.transliterated || hoveredToken.text}</span>
                                 </div>
                                 
-                                <div className="flex justify-between pb-1 border-b border-slate-50">
+                                <div className="flex justify-between pb-1 border-b border-slate-50 dark:border-slate-800">
                                   <span className="text-slate-400 font-medium">Universal POS Tag:</span>
-                                  <span className="font-semibold text-slate-800 font-mono bg-slate-100 px-1 py-0.5 rounded-md">{hoveredToken.posTag}</span>
+                                  <span className="font-semibold text-slate-800 dark:text-slate-200 font-mono bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded-md">{hoveredToken.posTag}</span>
                                 </div>
 
-                                <div className="flex justify-between pb-1 border-b border-slate-50">
+                                <div className="flex justify-between pb-1 border-b border-slate-50 dark:border-slate-800">
                                   <span className="text-slate-400 font-medium">NER Classification:</span>
-                                  <span className="font-semibold text-slate-800 font-mono text-slate-500">{hoveredToken.nerTag}</span>
+                                  <span className="font-semibold font-mono text-slate-500 dark:text-slate-400">{hoveredToken.nerTag}</span>
                                 </div>
 
-                                <div className="flex justify-between pb-1 border-b border-slate-50">
+                                <div className="flex justify-between pb-1 border-b border-slate-50 dark:border-slate-800">
                                   <span className="text-slate-400 font-medium">Base Root Lemma:</span>
-                                  <span className="font-semibold text-[#1d4ed8] font-mono">{hoveredToken.morphology?.root || hoveredToken.text}</span>
+                                  <span className={`font-semibold font-mono ${d.primaryText}`}>{hoveredToken.morphology?.root || hoveredToken.text}</span>
                                 </div>
 
-                                <div className="flex justify-between pb-1 border-b border-slate-50">
+                                <div className="flex justify-between pb-1 border-b border-slate-50 dark:border-slate-800">
                                   <span className="text-slate-400 font-medium">Affixes Segmented:</span>
-                                  <span className="font-semibold text-slate-800">
+                                  <span className="font-semibold text-slate-800 dark:text-slate-200">
                                     {hoveredToken.morphology?.affixes?.length > 0 
                                       ? hoveredToken.morphology.affixes.join(", ") 
                                       : "None (Morphemically simple)"}
@@ -2186,7 +2237,7 @@ export default function App() {
 
                                 <div className="space-y-1 pt-2">
                                   <span className="text-slate-400 font-medium">English Translation / Semantic Gloss:</span>
-                                  <p className="p-2.5 bg-slate-50 rounded-lg text-slate-700 italic border-l-2 border-slate-300">
+                                  <p className="p-2.5 bg-slate-50 dark:bg-slate-900 rounded-lg text-slate-700 dark:text-slate-300 italic border-l-2 border-slate-300 dark:border-slate-600">
                                     "{hoveredToken.englishGloss}"
                                   </p>
                                 </div>
@@ -2194,7 +2245,7 @@ export default function App() {
                             </div>
                           ) : (
                             <div className="text-center py-12 text-slate-400 text-xs italic space-y-2">
-                              <Globe size={22} className="mx-auto text-slate-300 animate-spin" style={{ animationDuration: '8s' }} />
+                              <Globe size={22} className="mx-auto text-slate-300 dark:text-slate-600 animate-spin" style={{ animationDuration: '8s' }} />
                               <p>Hover over a word in the database table to deconstruct its morphological segmentation.</p>
                             </div>
                           )}
@@ -2211,10 +2262,10 @@ export default function App() {
                       {/* Borrowed Vocabulary list (2 cols) */}
                       <div className="lg:col-span-2 space-y-6">
                         
-                        <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm space-y-4">
+                        <div className={`rounded-2xl border p-6 shadow-sm space-y-4 transition-all duration-300 ${d.card}`}>
                           <div>
-                            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center space-x-1.5">
-                              <Layers size={14} className="text-[#1d4ed8]" />
+                            <h4 className={`text-xs font-bold uppercase tracking-wider flex items-center space-x-1.5 ${d.cardTitle}`}>
+                              <Layers size={14} className={d.primaryText} />
                               <span>Lexical Borrowing Inventory</span>
                             </h4>
                             <p className="text-xs text-slate-400 mt-1">
@@ -2222,17 +2273,17 @@ export default function App() {
                             </p>
                           </div>
 
-                          <div className="divide-y divide-slate-100">
+                          <div className="divide-y divide-slate-100 dark:divide-slate-800">
                             {currentAnalysis.borrowedVocabulary?.map((b, idx) => (
                               <div key={idx} className="py-3 flex justify-between items-center text-sm">
                                 <div className="space-y-1">
-                                  <span className="font-bold text-[#1d4ed8] font-mono">{b.word}</span>
-                                  <div className="text-xs text-slate-500">
+                                  <span className={`font-bold font-mono ${d.primaryText}`}>{b.word}</span>
+                                  <div className="text-xs text-slate-500 dark:text-slate-400">
                                     <span className="font-semibold text-slate-400">Syntax Frame:</span> {b.targetSyntax}
                                   </div>
                                 </div>
                                 <div className="text-right">
-                                  <span className="bg-slate-100 text-slate-600 font-mono font-bold text-xs px-2.5 py-1 rounded-full">
+                                  <span className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono font-bold text-xs px-2.5 py-1 rounded-full">
                                     Freq: {b.frequency}
                                   </span>
                                 </div>
@@ -2245,20 +2296,20 @@ export default function App() {
                         </div>
 
                         {/* Slang and informal terminology */}
-                        <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm space-y-4">
+                        <div className={`rounded-2xl border p-6 shadow-sm space-y-4 transition-all duration-300 ${d.card}`}>
                           <div>
-                            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Colloquial & Informal Markers</h4>
+                            <h4 className={`text-xs font-bold uppercase tracking-wider ${d.cardTitle}`}>Colloquial & Informal Markers</h4>
                             <p className="text-xs text-slate-400 mt-1">Extracted colloquial slang expressions, Banglish colloquial compound phrases, and their semantic translations.</p>
                           </div>
 
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             {currentAnalysis.slangAndInformal?.map((s, idx) => (
-                              <div key={idx} className="bg-slate-50 border border-slate-100 rounded-xl p-4 space-y-1.5">
-                                <div className="flex justify-between text-xs border-b border-slate-200 pb-1.5">
-                                  <strong className="font-bold text-slate-800 font-mono">{s.term}</strong>
-                                  <span className="text-[10px] font-mono bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-md uppercase">{s.category}</span>
+                              <div key={idx} className="bg-slate-50 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-800 rounded-xl p-4 space-y-1.5">
+                                <div className="flex justify-between text-xs border-b border-slate-200 dark:border-slate-700 pb-1.5">
+                                  <strong className="font-bold text-slate-800 dark:text-slate-100 font-mono">{s.term}</strong>
+                                  <span className="text-[10px] font-mono bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded-md uppercase">{s.category}</span>
                                 </div>
-                                <p className="text-xs text-slate-600 italic leading-relaxed">
+                                <p className="text-xs text-slate-600 dark:text-slate-300 italic leading-relaxed">
                                   "{s.meaning}"
                                 </p>
                               </div>
@@ -2272,25 +2323,25 @@ export default function App() {
                       </div>
 
                       {/* Side Panel: Emoji Pragmatics */}
-                      <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm space-y-4">
+                      <div className={`rounded-2xl border p-6 shadow-sm space-y-4 transition-all duration-300 ${d.card}`}>
                         <div>
-                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Pragmatic Emoji Interpreter</h4>
+                          <h4 className={`text-xs font-bold uppercase tracking-wider ${d.cardTitle}`}>Pragmatic Emoji Interpreter</h4>
                           <p className="text-xs text-slate-400 mt-1">Analyzes the computational and pragmatic utility of emojis in conversational code-switching.</p>
                         </div>
 
                         <div className="space-y-3">
                           {currentAnalysis.emojis?.map((em, idx) => (
-                            <div key={idx} className="p-3 bg-slate-50 rounded-xl border border-slate-100 flex items-start space-x-3 text-xs">
+                            <div key={idx} className="p-3 bg-slate-50 dark:bg-slate-900/60 rounded-xl border border-slate-100 dark:border-slate-800 flex items-start space-x-3 text-xs">
                               <span className="text-2xl select-none leading-none">{em.emoji}</span>
                               <div className="space-y-1">
-                                <strong className="font-semibold text-slate-700">Linguistic Utility:</strong>
-                                <p className="text-slate-500 leading-relaxed italic">"{em.linguisticFunction}"</p>
+                                <strong className="font-semibold text-slate-700 dark:text-slate-200">Linguistic Utility:</strong>
+                                <p className="text-slate-500 dark:text-slate-400 leading-relaxed italic">"{em.linguisticFunction}"</p>
                               </div>
                             </div>
                           ))}
                           {(!currentAnalysis.emojis || currentAnalysis.emojis.length === 0) && (
                             <div className="text-center py-12 text-slate-400 italic space-y-1.5">
-                              <HelpCircle className="mx-auto text-slate-300" size={24} />
+                              <HelpCircle className="mx-auto text-slate-300 dark:text-slate-600" size={24} />
                               <p>No emojis detected in text input.</p>
                             </div>
                           )}
@@ -2304,47 +2355,47 @@ export default function App() {
                   {parserSubTab === "syntax" && (
                     <div className="space-y-6">
                       
-                      <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm space-y-4">
+                      <div className={`rounded-2xl border p-6 shadow-sm space-y-4 transition-all duration-300 ${d.card}`}>
                         <div>
-                          <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Syntactic Mapping of Sentences</h4>
+                          <h4 className={`text-xs font-bold uppercase tracking-wider ${d.cardTitle}`}>Syntactic Mapping of Sentences</h4>
                           <p className="text-xs text-slate-400 mt-1">Each sentence analyzed sequentially to extract code-mixing patterns, sentence categories, and localized CMI.</p>
                         </div>
 
-                        <div className="space-y-4 divide-y divide-slate-100">
+                        <div className="space-y-4 divide-y divide-slate-100 dark:divide-slate-800">
                           {currentAnalysis.sentenceStructure?.map((s, idx) => (
                             <div key={idx} className={`pt-4 ${idx === 0 ? "pt-0" : ""} space-y-3`}>
                               <div className="flex flex-wrap items-center justify-between gap-2">
-                                <span className="bg-slate-100 text-slate-600 font-mono text-[10px] px-2 py-0.5 rounded-md uppercase font-bold">
+                                <span className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono text-[10px] px-2 py-0.5 rounded-md uppercase font-bold">
                                   Sentence {idx + 1} • {s.type} Structure
                                 </span>
                                 
                                 <div className="flex items-center space-x-3 text-xs">
-                                  <span className="font-mono font-medium text-slate-500">
-                                    Mixing: <strong className="font-bold text-slate-800">{s.cmi}% CMI</strong>
+                                  <span className="font-mono font-medium text-slate-500 dark:text-slate-400">
+                                    Mixing: <strong className="font-bold text-slate-800 dark:text-slate-100">{s.cmi}% CMI</strong>
                                   </span>
                                 </div>
                               </div>
 
-                              <p className="text-sm font-semibold text-slate-800 leading-relaxed font-mono">
+                              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100 leading-relaxed font-mono">
                                 "{s.sentence}"
                               </p>
 
-                              <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 space-y-2">
+                              <div className="bg-slate-50 dark:bg-slate-900/60 p-3 rounded-lg border border-slate-100 dark:border-slate-800 space-y-2">
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Language Transition Pattern:</span>
                                 <div className="flex flex-wrap items-center gap-1">
                                   {s.languagePattern.split("-").map((pt, pIdx) => (
                                     <div key={pIdx} className="flex items-center space-x-1">
                                       <span className={`text-[10px] font-bold font-mono px-2 py-0.5 rounded-sm ${
                                         pt === "B" 
-                                          ? "bg-emerald-100 text-emerald-800" 
+                                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300" 
                                           : pt === "E" 
-                                            ? "bg-blue-100 text-blue-800" 
-                                            : "bg-violet-100 text-violet-800"
+                                            ? "bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300" 
+                                            : "bg-violet-100 text-violet-800 dark:bg-violet-900/50 dark:text-violet-300"
                                       }`}>
                                         {pt === "B" ? "Bangla" : pt === "E" ? "English" : "Mixed"}
                                       </span>
                                       {pIdx < s.languagePattern.split("-").length - 1 && (
-                                        <ArrowRight size={11} className="text-slate-300" />
+                                        <ArrowRight size={11} className="text-slate-300 dark:text-slate-600" />
                                       )}
                                     </div>
                                   ))}
@@ -2374,41 +2425,41 @@ export default function App() {
               {/* Corpus Metrics Aggregator Panels */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
                 
-                <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm flex items-center space-x-4">
-                  <div className="p-3 bg-blue-50 text-[#1d4ed8] rounded-xl">
+                <div className={`rounded-2xl border p-6 shadow-sm flex items-center space-x-4 transition-all duration-300 ${d.card}`}>
+                  <div className="p-3 bg-blue-50 dark:bg-blue-950/60 text-[#1d4ed8] dark:text-blue-400 rounded-xl">
                     <Database size={22} />
                   </div>
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Catalog Size</span>
-                    <strong className="text-2xl font-bold text-slate-800 font-mono">{corpusMetrics.totalSamples}</strong>
+                    <strong className="text-2xl font-bold text-slate-800 dark:text-slate-100 font-mono">{corpusMetrics.totalSamples}</strong>
                     <span className="text-xs text-slate-400 block mt-0.5">Anonymized Samples</span>
                   </div>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm flex items-center space-x-4">
-                  <div className="p-3 bg-emerald-50 text-emerald-700 rounded-xl">
+                <div className={`rounded-2xl border p-6 shadow-sm flex items-center space-x-4 transition-all duration-300 ${d.card}`}>
+                  <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 rounded-xl">
                     <TrendingUp size={22} />
                   </div>
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Mean Corpus CMI</span>
-                    <strong className="text-2xl font-bold text-slate-800 font-mono">{corpusMetrics.avgCmi}%</strong>
+                    <strong className="text-2xl font-bold text-slate-800 dark:text-slate-100 font-mono">{corpusMetrics.avgCmi}%</strong>
                     <span className="text-xs text-slate-400 block mt-0.5">Mixing Density</span>
                   </div>
                 </div>
 
-                <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm flex items-center space-x-4">
-                  <div className="p-3 bg-violet-50 text-violet-700 rounded-xl">
+                <div className={`rounded-2xl border p-6 shadow-sm flex items-center space-x-4 transition-all duration-300 ${d.card}`}>
+                  <div className="p-3 bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 rounded-xl">
                     <Layers size={22} />
                   </div>
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Total Parsed Words</span>
-                    <strong className="text-2xl font-bold text-slate-800 font-mono">{corpusMetrics.totalTokens}</strong>
+                    <strong className="text-2xl font-bold text-slate-800 dark:text-slate-100 font-mono">{corpusMetrics.totalTokens}</strong>
                     <span className="text-xs text-slate-400 block mt-0.5">Annotated Tokens</span>
                   </div>
                 </div>
 
                 {/* Database Exporters Widget */}
-                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-md flex flex-col justify-between space-y-3">
+                <div className="bg-slate-900 text-white rounded-2xl p-5 shadow-md flex flex-col justify-between space-y-3 border border-slate-800">
                   <div>
                     <h4 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Export Database Dataset</h4>
                     <p className="text-[10px] text-slate-300 leading-relaxed mt-0.5">Download corpus variables anonymized for research engines.</p>
@@ -2439,10 +2490,10 @@ export default function App() {
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 
                 {/* Pos tag frequency aggregator */}
-                <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm">
-                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-4 flex items-center space-x-2">
-                    <Layers size={14} className="text-[#1d4ed8]" />
-                    <span>Corpus Parts-of-Speech Universal Ratios (D3/Recharts Visualization)</span>
+                <div className={`rounded-2xl border p-6 shadow-sm transition-all duration-300 ${d.card}`}>
+                  <h5 className={`text-xs font-bold uppercase tracking-wider mb-4 flex items-center space-x-2 ${d.cardTitle}`}>
+                    <Layers size={14} className={d.primaryText} />
+                    <span>Corpus Parts-of-Speech Universal Ratios (Recharts Visualization)</span>
                   </h5>
                   
                   <div className="h-48">
@@ -2462,8 +2513,8 @@ export default function App() {
                 </div>
 
                 {/* Language proportion ratios across all database */}
-                <div className="bg-white rounded-2xl border border-[#e2e8f0] p-6 shadow-sm">
-                  <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-4 flex items-center space-x-2">
+                <div className={`rounded-2xl border p-6 shadow-sm transition-all duration-300 ${d.card}`}>
+                  <h5 className={`text-xs font-bold uppercase tracking-wider mb-4 flex items-center space-x-2 ${d.cardTitle}`}>
                     <Languages size={14} className="text-emerald-600" />
                     <span>Corpus Cumulative Language Distribution</span>
                   </h5>
@@ -2494,10 +2545,10 @@ export default function App() {
               </div>
 
               {/* SEARCH FILTERS AND CATALOG DATABASE TABLE */}
-              <div className="bg-white rounded-2xl border border-[#e2e8f0] shadow-sm overflow-hidden">
+              <div className={`rounded-2xl border shadow-sm overflow-hidden transition-all duration-300 ${d.card}`}>
                 
                 {/* Filters Row */}
-                <div className="p-6 bg-[#f8fafc] border-b border-[#e2e8f0] flex flex-col md:flex-row gap-4 items-center justify-between">
+                <div className="p-6 bg-[#f8fafc] dark:bg-slate-900/60 border-b border-[#e2e8f0] dark:border-slate-800 flex flex-col md:flex-row gap-4 items-center justify-between">
                   <div className="relative w-full md:w-72 shrink-0">
                     <Search className="absolute left-3 top-3 text-slate-400" size={16} />
                     <input
@@ -2506,19 +2557,19 @@ export default function App() {
                       placeholder="Search text, annotations, tags..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full bg-white border border-[#cbd5e1] outline-none rounded-xl py-2 pl-10 pr-4 text-xs text-slate-800 placeholder-slate-400 focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8]"
+                      className={`w-full border outline-none rounded-xl py-2 pl-10 pr-4 text-xs placeholder-slate-400 focus:border-[#1d4ed8] focus:ring-1 focus:ring-[#1d4ed8] ${d.tagInput}`}
                     />
                   </div>
 
                   <div className="flex flex-wrap gap-4 items-center justify-end w-full">
                     
                     <div className="flex items-center space-x-2 text-xs">
-                      <span className="text-slate-500 font-semibold">Switching Type:</span>
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold">Switching Type:</span>
                       <select
                         id="filter-switching"
                         value={filterSwitchingType}
                         onChange={(e) => setFilterSwitchingType(e.target.value)}
-                        className="bg-white border border-[#cbd5e1] rounded-lg p-1.5 outline-none font-semibold text-slate-700"
+                        className={`border rounded-lg p-1.5 outline-none font-semibold ${d.tagInput}`}
                       >
                         <option value="All">All Types</option>
                         <option value="Insertional">Insertional</option>
@@ -2529,12 +2580,12 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center space-x-2 text-xs">
-                      <span className="text-slate-500 font-semibold">Matrix:</span>
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold">Matrix:</span>
                       <select
                         id="filter-matrix"
                         value={filterMatrixLanguage}
                         onChange={(e) => setFilterMatrixLanguage(e.target.value)}
-                        className="bg-white border border-[#cbd5e1] rounded-lg p-1.5 outline-none font-semibold text-slate-700"
+                        className={`border rounded-lg p-1.5 outline-none font-semibold ${d.tagInput}`}
                       >
                         <option value="All">All Frames</option>
                         <option value="Bangla">Bangla Frame</option>
@@ -2544,15 +2595,15 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center space-x-2 text-xs">
-                      <span className="text-slate-500 font-semibold">Min CMI:</span>
+                      <span className="text-slate-500 dark:text-slate-400 font-semibold">Min CMI:</span>
                       <input 
                         id="filter-min-cmi"
                         type="number"
                         min="0"
                         max="100"
                         value={filterMinCmi}
-                        onChange={(e) => setFilterMinCmi(Number(e.target.value))}
-                        className="w-14 bg-white border border-[#cbd5e1] rounded-lg p-1 outline-none font-mono text-slate-700 text-center"
+                        onChange={(e) => setFilterMinCmi(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                        className={`w-14 border rounded-lg p-1 outline-none font-mono text-center ${d.tagInput}`}
                       />
                       <span className="text-slate-400">%</span>
                     </div>
@@ -2564,7 +2615,7 @@ export default function App() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
-                      <tr className="bg-[#f8fafc] border-b border-[#e2e8f0] text-xs font-bold text-slate-500 uppercase">
+                      <tr className="bg-[#f8fafc] dark:bg-slate-900/70 border-b border-[#e2e8f0] dark:border-slate-800 text-xs font-bold text-slate-500 dark:text-slate-400 uppercase">
                         <th className="p-4">Recorded Date</th>
                         <th className="p-4 w-96">Text Sample</th>
                         <th className="p-4">Tags / Labels</th>
@@ -2573,12 +2624,12 @@ export default function App() {
                         <th className="p-4 text-right">Actions</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 text-sm">
-                      {filteredCorpus.map((item, idx) => (
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
+                      {filteredCorpus.map((item) => (
                         <tr 
                           key={item.id}
                           onClick={() => loadCorpusItemToWorkspace(item)}
-                          className="hover:bg-[#f1f5f9]/50 transition duration-150 cursor-pointer"
+                          className="hover:bg-[#f1f5f9]/50 dark:hover:bg-slate-800/40 transition duration-150 cursor-pointer"
                         >
                           <td className="p-4 text-xs text-slate-400 font-mono">
                             <span className="flex items-center space-x-1.5">
@@ -2586,7 +2637,7 @@ export default function App() {
                               <span>{new Date(item.timestamp).toLocaleDateString()}</span>
                             </span>
                           </td>
-                          <td className="p-4 font-semibold text-slate-800">
+                          <td className="p-4 font-semibold text-slate-800 dark:text-slate-100">
                             <p className="truncate max-w-[320px]">{item.text}</p>
                             {item.researcherNotes && (
                               <span className="text-[10px] text-slate-400 block font-normal italic truncate max-w-[320px] mt-0.5">
@@ -2597,26 +2648,26 @@ export default function App() {
                           <td className="p-4">
                             <div className="flex flex-wrap gap-1">
                               {item.tags?.split(",").map((t, tIdx) => (
-                                <span key={tIdx} className="bg-slate-100 text-slate-600 text-[10px] px-2 py-0.5 rounded-full font-medium">
+                                <span key={tIdx} className="bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-[10px] px-2 py-0.5 rounded-full font-medium">
                                   {t.trim()}
                                 </span>
                               ))}
                             </div>
                           </td>
-                          <td className="p-4 text-center font-mono font-bold text-slate-800">
+                          <td className="p-4 text-center font-mono font-bold text-slate-800 dark:text-slate-100">
                             <span className={`px-2 py-0.5 rounded ${
                               item.analysis.languageStats.codeMixingIndex > 35 
-                                ? "bg-red-50 text-red-700" 
+                                ? "bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300" 
                                 : item.analysis.languageStats.codeMixingIndex > 15 
-                                  ? "bg-amber-50 text-amber-700" 
-                                  : "bg-emerald-50 text-emerald-700"
+                                  ? "bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300" 
+                                  : "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300"
                             }`}>
                               {item.analysis.languageStats.codeMixingIndex}%
                             </span>
                           </td>
                           <td className="p-4 text-xs">
                             <div className="space-y-0.5">
-                              <span className="font-semibold text-slate-700">{item.analysis.classification.switchingType}</span>
+                              <span className="font-semibold text-slate-700 dark:text-slate-200">{item.analysis.classification.switchingType}</span>
                               <span className="text-slate-400 block">Matrix: {item.analysis.classification.matrixLanguage}</span>
                             </div>
                           </td>
@@ -2624,14 +2675,14 @@ export default function App() {
                             <div className="flex items-center justify-end space-x-2">
                               <button 
                                 onClick={() => loadCorpusItemToWorkspace(item)}
-                                className="p-1.5 text-slate-400 hover:text-[#1d4ed8] hover:bg-[#1d4ed8]/10 rounded-lg transition"
+                                className="p-1.5 text-slate-400 hover:text-[#1d4ed8] hover:bg-[#1d4ed8]/10 rounded-lg transition cursor-pointer"
                                 title="Load to active parser workspace"
                               >
                                 <ChevronRight size={16} />
                               </button>
                               <button 
                                 onClick={(e) => deleteCorpusItem(item.id, e)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition cursor-pointer"
                                 title="Delete from corpus dataset"
                               >
                                 <Trash2 size={16} />
@@ -2816,7 +2867,7 @@ export default function App() {
               <Sparkles className="text-purple-500 animate-pulse" size={16} />
               <div>
                 <h3 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider font-mono">Bilingual AI Helper</h3>
-                <p className="text-[9px] text-slate-400">Powered by Gemini-3.5-Flash</p>
+                <p className="text-[9px] text-slate-400">Linguistic Research Assistant</p>
               </div>
             </div>
             <button 

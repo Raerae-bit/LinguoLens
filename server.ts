@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
 dotenv.config();
@@ -29,6 +29,47 @@ function getGemini(): GoogleGenAI {
     });
   }
   return ai;
+}
+
+// Helper for transient Gemini API retries (exponential backoff on 429/503)
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+  let lastError: any;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const msg = String(err?.message || "");
+      const status = err?.status || err?.code;
+      const isTransient =
+        status === 503 ||
+        status === 429 ||
+        msg.includes("503") ||
+        msg.includes("UNAVAILABLE") ||
+        msg.includes("high demand") ||
+        msg.includes("RESOURCE_EXHAUSTED");
+
+      if (!isTransient || attempt === maxRetries) {
+        throw err;
+      }
+      const delayMs = 800 * Math.pow(2, attempt);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
+
+function formatGeminiError(error: any, fallback: string): string {
+  const raw = error?.message || "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.error?.message) {
+      return parsed.error.message;
+    }
+  } catch {
+    // Not JSON, return raw string
+  }
+  return raw || fallback;
 }
 
 // Health Check Endpoint
@@ -62,24 +103,37 @@ Current workspace context:
 - Slider - Noise/Density: ${context?.mixerNoise || 40}%
 - Active Theme: "${context?.theme || 'slate'}"`;
 
-    const chatContents = messages.map(msg => ({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.text }]
-    }));
+    const rawContents = messages
+      .filter((msg) => msg && typeof msg.text === "string" && msg.text.trim())
+      .map((msg) => ({
+        role: msg.role === "assistant" ? "model" : "user",
+        parts: [{ text: msg.text }]
+      }));
 
-    const response = await client.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: chatContents,
-      config: {
-        systemInstruction,
-      }
-    });
+    // Ensure conversation contents start with a user turn for Gemini generateContent
+    const firstUserIdx = rawContents.findIndex((m) => m.role === "user");
+    const chatContents = firstUserIdx >= 0 ? rawContents.slice(firstUserIdx) : [];
+
+    if (chatContents.length === 0) {
+      return res.status(400).json({ error: "At least one user message is required." });
+    }
+
+    const response = await callWithRetry(() =>
+      client.models.generateContent({
+        model: "gemini-4-hydrogen",
+        contents: chatContents,
+        config: {
+          systemInstruction,
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        }
+      })
+    );
 
     const reply = response.text || "I apologize, I could not generate a response. Please try again!";
     res.json({ text: reply });
   } catch (error: any) {
     console.error("Assistant API Error:", error);
-    res.status(500).json({ error: error?.message || "An error occurred in the Helping AI Assistant service." });
+    res.status(500).json({ error: formatGeminiError(error, "An error occurred in the Helping AI Assistant service.") });
   }
 });
 
@@ -118,12 +172,14 @@ Linguistic Rules:
 
 Ensure the output is 100% valid JSON matching the exact schema specified. Do not wrap in markdown quotes unless requested, but here you must respond with raw JSON in the JSON response MIME mode.`;
 
-    const response = await client.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: `Perform a full computational linguistics and code-mixing analysis on the following text:
+    const response = await callWithRetry(() =>
+      client.models.generateContent({
+        model: "gemini-4-hydrogen",
+        contents: `Perform a full computational linguistics and code-mixing analysis on the following text:
 "${text}"`,
       config: {
         systemInstruction,
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         responseMimeType: "application/json",
         responseSchema: {
           type: Type.OBJECT,
@@ -254,18 +310,26 @@ Ensure the output is 100% valid JSON matching the exact schema specified. Do not
           }
         }
       }
-    });
+      })
+    );
 
     const resultText = response.text;
     if (!resultText) {
       throw new Error("Linguistics analyzer failed to generate content.");
     }
 
-    const parsedData = JSON.parse(resultText);
+    const cleanedJson = resultText
+      .trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
+
+    const parsedData = JSON.parse(cleanedJson);
     res.json(parsedData);
   } catch (error: any) {
     console.error("Analysis Error:", error);
-    res.status(500).json({ error: error?.message || "An error occurred during computational linguistics analysis." });
+    res.status(500).json({ error: formatGeminiError(error, "An error occurred during computational linguistics analysis.") });
   }
 });
 
