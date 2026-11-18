@@ -1,0 +1,6 @@
+{
+  "name": "LinguoLens",
+  "description": "LinguoLens is a Bangla-English Code-Mixing Research Platform for computational linguistics, analyzing text structures, parts of speech, code-switching frequency, and corpus data.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
